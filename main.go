@@ -18,24 +18,33 @@ const (
 )
 
 var (
-	mediaExts = []string{".mp3", ".mp4"}
+	mediaExts = []string{".mp3", ".mp4", ".webm"}
 )
 
-func mp3Mp4Merger(ctx context.Context, errs chan<- error, mp4Path, mp3Path string) {
-	dstFilename := MergedFilePrefix + " " + mp4Path
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-i", mp4Path, "-i", mp3Path, "-c", "copy", dstFilename)
+func mp3Mp4Merger(ctx context.Context, errs chan<- error, videoPath, mp3Path string) {
+	dstFilename := MergedFilePrefix + " " + videoPath
+	var cmd *exec.Cmd
+	switch ext := filepath.Ext(videoPath); ext {
+	case ".mp4":
+		cmd = exec.CommandContext(ctx, "ffmpeg", "-i", videoPath, "-i", mp3Path, "-c", "copy", dstFilename)
+	case ".webm":
+		cmd = exec.CommandContext(ctx, "ffmpeg", "-i", videoPath, "-i", mp3Path, "-c:v", "copy", "-c:a", "libvorbis", dstFilename)
+	default:
+		errs <- fmt.Errorf(`unrecognized file extension "%s" of file "%s"`, ext, videoPath)
+		return
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 
-	log.Printf(`Merging "%s" and "%s"`, mp4Path, mp3Path)
+	log.Printf(`Merging "%s" and "%s"`, videoPath, mp3Path)
 	if err := cmd.Run(); err != nil {
 		cmdErr := fmt.Errorf("command error: '%s'", stderr.String())
 		errs <- fmt.Errorf("%w: %w", err, cmdErr)
 		return
 	}
-	log.Printf(`Merged "%s" and "%s" to "%s"`, mp4Path, mp3Path, dstFilename)
+	log.Printf(`Merged "%s" and "%s" to "%s"`, videoPath, mp3Path, dstFilename)
 
-	for _, filepath := range []string{mp4Path, mp3Path} {
+	for _, filepath := range []string{videoPath, mp3Path} {
 		err := os.Remove(filepath)
 		if err != nil {
 			errs <- fmt.Errorf(`failed to remove file "%s": %w`, filepath, err)
@@ -88,9 +97,13 @@ func main() {
 	}
 
 	for fileName, exts := range fileNames {
-		if len(exts) != len(mediaExts) {
+		if !slices.Contains(exts, ".mp3") || len(exts) < 2 {
 			delete(fileNames, fileName)
+			continue
 		}
+		audioExt := ".mp3"
+		videoExt := exts[1-slices.Index(exts, ".mp3")]
+		fileNames[fileName] = []string{videoExt, audioExt}
 	}
 
 	nProc := runtime.NumCPU() / 2
@@ -104,7 +117,7 @@ func main() {
 			log.Print(err)
 		}
 	}()
-	for fileName := range fileNames {
+	for fileName, exts := range fileNames {
 		<-scheduled
 		ctx := context.Background()
 		go func() {
@@ -112,7 +125,7 @@ func main() {
 				wg.Done()
 				scheduled <- struct{}{}
 			}()
-			mp3Mp4Merger(ctx, errs, fileName+".mp4", fileName+".mp3")
+			mp3Mp4Merger(ctx, errs, fileName+exts[0], fileName+exts[1])
 		}()
 	}
 	wg.Wait()
