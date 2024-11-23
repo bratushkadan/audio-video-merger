@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -66,7 +67,7 @@ func newBucket(capacity int) chan struct{} {
 	return b
 }
 
-func main() {
+func mergeAudVid() {
 	cwd, err := os.Getwd()
 	if err != nil {
 		log.Fatal(err)
@@ -130,6 +131,115 @@ func main() {
 	}
 	wg.Wait()
 	close(errs)
+}
 
-	// fmt.Printf("%#v\n", fileNames)
+type tmpFile struct {
+	dir string
+
+	file *os.File
+}
+
+func (f *tmpFile) File() *os.File {
+	return f.file
+}
+
+func (f *tmpFile) Create() (*os.File, error) {
+	dir, err := os.MkdirTemp("", "concat-files")
+	if err != nil {
+		return nil, fmt.Errorf("error creating temporary directory for list of videos: %v", err)
+	}
+	f.dir = dir
+
+	file, err := os.CreateTemp(dir, "video-file-list")
+	if err != nil {
+		errRmDir := os.Remove(f.dir)
+		if errRmDir != nil {
+			return nil, fmt.Errorf("error creating temp file for the list of videos: %v, error cleaning up temp dir: %v", err, errRmDir)
+		}
+		return nil, fmt.Errorf("error creating temp file for the list of videos: %v", err)
+	}
+
+	f.file = file
+
+	return f.file, nil
+}
+
+func (f *tmpFile) Cleanup() error {
+	var errs []error
+	var err = f.file.Close()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	err = os.RemoveAll(f.dir)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func concatInputFiles(files []string) string {
+	mappedFiles := make([]string, 0, len(files))
+	for _, v := range files {
+		mappedFiles = append(mappedFiles, fmt.Sprintf("file '%s'", v))
+	}
+
+	return strings.Join(mappedFiles, "\n")
+}
+
+func concatVideos(ctx context.Context) error {
+	files := os.Args[1:]
+	switch len(files) {
+	case 0:
+		log.Fatal("no video files to concat provided")
+	case 1:
+		log.Fatal("provide more than one video to concat")
+	}
+
+	for i, v := range files {
+		abs, err := filepath.Abs(v)
+		if err != nil {
+			return fmt.Errorf("failed to convert relative path to absolute: %v", err)
+		}
+		files[i] = abs
+	}
+
+	f := &tmpFile{}
+	file, err := f.Create()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err := f.Cleanup()
+		if err != nil {
+			log.Println(fmt.Errorf("failed to clean up: %v", err))
+		}
+	}()
+
+	_, err = file.WriteString(concatInputFiles(files))
+	if err != nil {
+		return err
+	}
+
+	args := []string{"-f", "concat", "-safe", "0", "-i", file.Name(), strings.Join(files, "_")}
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to run ffmpeg concat command: %v", err)
+	}
+
+	return nil
+}
+
+func main() {
+	if err := concatVideos(context.TODO()); err != nil {
+		log.Fatal(err)
+	}
+	// mergeAudVid()
 }
