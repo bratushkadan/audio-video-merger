@@ -184,7 +184,7 @@ func (f *tmpFile) Cleanup() error {
 func concatInputFiles(files []string) string {
 	mappedFiles := make([]string, 0, len(files))
 	for _, v := range files {
-		mappedFiles = append(mappedFiles, fmt.Sprintf("file '%s'", v))
+		mappedFiles = append(mappedFiles, fmt.Sprintf("file 'file:%s'", v))
 	}
 
 	return strings.Join(mappedFiles, "\n")
@@ -199,21 +199,17 @@ func concatVideos(ctx context.Context) error {
 		log.Fatal("provide more than one video to concat")
 	}
 
-	for i, v := range files {
-		abs, err := filepath.Abs(v)
-		if err != nil {
-			return fmt.Errorf("failed to convert relative path to absolute: %v", err)
-		}
-		files[i] = abs
-	}
-
-	f := &tmpFile{}
-	file, err := f.Create()
+	file, err := os.Create("list.txt")
 	if err != nil {
 		return err
 	}
 	defer func() {
-		err := f.Cleanup()
+		err := file.Close()
+		if err != nil {
+			log.Println(fmt.Errorf("failed to close file: %v", err))
+			return
+		}
+		err = os.Remove(file.Name())
 		if err != nil {
 			log.Println(fmt.Errorf("failed to clean up: %v", err))
 		}
@@ -224,7 +220,7 @@ func concatVideos(ctx context.Context) error {
 		return err
 	}
 
-	args := []string{"-f", "concat", "-safe", "0", "-i", file.Name(), strings.Join(files, "_")}
+	args := []string{"-f", "concat", "-safe", "0", "-i", file.Name(), fmt.Sprintf("concat - %s", files[0])}
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 
 	cmd.Stderr = os.Stderr
